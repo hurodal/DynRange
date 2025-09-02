@@ -7,6 +7,8 @@
 #include <iostream>
 #include <iomanip>
 #include <filesystem>
+#include <opencv2/imgproc.hpp>   // Para dibujar (líneas, círculos, texto)
+#include <opencv2/imgcodecs.hpp> // Para guardar la imagen (imwrite)
 
 namespace fs = std::filesystem;
 
@@ -299,4 +301,74 @@ void polyfit(const cv::Mat& src_x, const cv::Mat& src_y, cv::Mat& dst, int order
     cv::flip(A, A_flipped, 1);
 
     cv::solve(A_flipped, src_y, dst, cv::DECOMP_SVD);
+}
+
+void generate_debug_plot(
+    const std::string& output_filename,
+    const std::string& plot_title,
+    const std::vector<double>& all_snr_db,
+    const std::vector<double>& all_signal_ev,
+const DRCalcResult& result)
+{
+    // --- 1. Configuración del lienzo y coordenadas ---
+    const int width = 1000, height = 800, margin = 60;
+    cv::Mat plot_img(height, width, CV_8UC3, cv::Scalar(255, 255, 255)); // Lienzo blanco
+
+    double min_snr = -10, max_snr = 45;
+    double min_sig = -12, max_sig = 0;
+
+    auto to_pixel = [&](double snr, double sig) {
+        int px = margin + (int)((snr - min_snr) / (max_snr - min_snr) * (width - 2 * margin));
+        int py = margin + (int)((max_sig - sig) / (max_sig - min_sig) * (height - 2 * margin));
+        return cv::Point(px, py);
+    };
+
+    // --- 2. Dibujar ejes y rejilla ---
+    cv::line(plot_img, {margin, margin}, {margin, height - margin}, cv::Scalar(0,0,0), 2);
+    cv::line(plot_img, {margin, height - margin}, {width - margin, height - margin}, cv::Scalar(0,0,0), 2);
+    cv::putText(plot_img, "SNR (dB)", {width/2 - 40, height - 15}, cv::FONT_HERSHEY_SIMPLEX, 0.8, {0,0,0}, 2);
+    cv::putText(plot_img, "Signal (EV)", {10, height/2}, cv::FONT_HERSHEY_SIMPLEX, 0.8, {0,0,0}, 2, cv::LINE_AA, true);
+    cv::putText(plot_img, plot_title, {width/2 - 150, 35}, cv::FONT_HERSHEY_SIMPLEX, 1.0, {0,0,0}, 2);
+
+    // --- 3. Dibujar los datos ---
+    for (size_t i = 0; i < all_snr_db.size(); ++i) {
+        cv::circle(plot_img, to_pixel(all_snr_db[i], all_signal_ev[i]), 4, cv::Scalar(200, 200, 200), -1);
+    }
+    for (size_t i = 0; i < result.filtered_snr.size(); ++i) {
+        cv::circle(plot_img, to_pixel(result.filtered_snr[i], result.filtered_signal[i]), 5, cv::Scalar(0, 0, 0), -1);
+    }
+
+    // --- 4. Dibujar las curvas de ajuste ---
+    const double step = 0.1;
+    // Curva Spline (en rojo)
+    // --- CORRECCIÓN AQUÍ ---
+    if (result.filtered_snr.size() >= 2) {
+        for (double x = result.filtered_snr.front(); x <= result.filtered_snr.back(); x += step) {
+            cv::Point p1 = to_pixel(x, result.spline_model(x));
+            cv::Point p2 = to_pixel(x + step, result.spline_model(x + step));
+            cv::line(plot_img, p1, p2, cv::Scalar(0, 0, 255), 2); // Rojo
+        }
+    }
+    // Curva Polinómica (en azul)
+    if (!result.poly_coeffs.empty()) {
+        double c2 = result.poly_coeffs.at<double>(0);
+        double c1 = result.poly_coeffs.at<double>(1);
+        double c0 = result.poly_coeffs.at<double>(2);
+        for (double x = min_snr; x <= max_snr; x += step) {
+            double y = c2 * x * x + c1 * x + c0;
+            double y_next = c2 * (x + step) * (x + step) + c1 * (x + step) + c0;
+            cv::line(plot_img, to_pixel(x, y), to_pixel(x + step, y_next), cv::Scalar(255, 0, 0), 2); // Azul
+        }
+    }
+
+    // --- 5. Dibujar leyenda ---
+    cv::circle(plot_img, {width - 200, 60}, 5, {0,0,0}, -1);
+    cv::putText(plot_img, "Filtered Data", {width - 180, 65}, cv::FONT_HERSHEY_SIMPLEX, 0.6, {0,0,0}, 1);
+    cv::line(plot_img, {width - 200, 90}, {width - 180, 90}, {255,0,0}, 2);
+    cv::putText(plot_img, "Polynomial Fit", {width - 170, 95}, cv::FONT_HERSHEY_SIMPLEX, 0.6, {0,0,0}, 1);
+    cv::line(plot_img, {width - 200, 120}, {width - 180, 120}, {0,0,255}, 2);
+    cv::putText(plot_img, "Spline", {width - 170, 125}, cv::FONT_HERSHEY_SIMPLEX, 0.6, {0,0,0}, 1);
+
+    // --- 6. Guardar la imagen ---
+    cv::imwrite(output_filename, plot_img);
 }

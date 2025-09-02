@@ -15,62 +15,45 @@
 
 namespace fs = std::filesystem;
 
-// --- Función de ayuda para calcular el DR para un umbral específico ---
-double calculate_dr_for_threshold(double threshold, const std::vector<double>& snr_db, const std::vector<double>& signal_ev, bool use_splines, std::ostream& log_stream) {
+// Función de ayuda para calcular los modelos de DR para un umbral específico
+static DRCalcResult calculate_dr_models(double threshold, const std::vector<double>& snr_db, const std::vector<double>& signal_ev, std::ostream& log_stream) {
     const double filter_range = 5.0;
+    DRCalcResult result;
     
-    // 1. Filtrar los parches según el nuevo criterio (umbral +/- 5dB)
-    std::vector<double> filtered_snr, filtered_signal;
+    // 1. Filtrar los parches según el criterio (umbral +/- 5dB)
     for (size_t i = 0; i < snr_db.size(); ++i) {
         if (snr_db[i] >= (threshold - filter_range) && snr_db[i] <= (threshold + filter_range)) {
-            filtered_snr.push_back(snr_db[i]);
-            filtered_signal.push_back(signal_ev[i]);
+            result.filtered_snr.push_back(snr_db[i]);
+            result.filtered_signal.push_back(signal_ev[i]);
         }
     }
 
-    log_stream << "  - Info: For " << threshold << "dB threshold, using " << filtered_snr.size() << " patches." << std::endl;
+    log_stream << "  - Info: For " << threshold << "dB threshold, using " << result.filtered_snr.size() << " patches." << std::endl;
 
-    if (use_splines) {
-        // --- MÉTODO SPLINE ---
-        if (filtered_snr.size() < 2) { 
-            log_stream << "  - Warning: Not enough data points for spline interpolation at " << threshold << "dB." << std::endl;
-            return 0.0;
-        }
-        tk::spline s;
-        std::vector<size_t> p(filtered_snr.size());
+    // 2. Calcular el modelo de Spline con los datos filtrados
+    if (result.filtered_snr.size() >= 2) {
+        std::vector<size_t> p(result.filtered_snr.size());
         std::iota(p.begin(), p.end(), 0);
-        std::sort(p.begin(), p.end(), [&](size_t i, size_t j){ return filtered_snr[i] < filtered_snr[j]; });
+        std::sort(p.begin(), p.end(), [&](size_t i, size_t j){ return result.filtered_snr[i] < result.filtered_snr[j]; });
         
-        std::vector<double> sorted_filtered_snr(filtered_snr.size()), sorted_filtered_signal(filtered_signal.size());
+        std::vector<double> sorted_snr(result.filtered_snr.size()), sorted_sig(result.filtered_signal.size());
         for(size_t idx = 0; idx < p.size(); ++idx) {
-            sorted_filtered_snr[idx] = filtered_snr[p[idx]]; 
-            sorted_filtered_signal[idx] = filtered_signal[p[idx]];
+            sorted_snr[idx] = result.filtered_snr[p[idx]]; 
+            sorted_sig[idx] = result.filtered_signal[p[idx]];
         }
-
-        s.set_points(sorted_filtered_snr, sorted_filtered_signal);
-        return -s(threshold);
-
-    } else {
-        // --- MÉTODO POLINÓMICO (por defecto) ---
-        if (filtered_snr.size() < 3) {
-            log_stream << "  - Warning: Not enough data points for polynomial fit at " << threshold << "dB." << std::endl;
-            return 0.0;
-        }
-        
-        cv::Mat snr_mat(filtered_snr.size(), 1, CV_64F, filtered_snr.data());
-        cv::Mat signal_mat(filtered_signal.size(), 1, CV_64F, filtered_signal.data());
-        
-        cv::Mat coeffs;
-        polyfit(snr_mat, signal_mat, coeffs, 2); // Usa nuestra nueva función polyfit
-
-        double c2 = coeffs.at<double>(0);
-        double c1 = coeffs.at<double>(1);
-        double c0 = coeffs.at<double>(2);
-        
-        double signal_at_threshold = c2 * threshold * threshold + c1 * threshold + c0;
-        return -signal_at_threshold;
+        result.spline_model.set_points(sorted_snr, sorted_sig);
     }
+
+    // 3. Calcular el modelo Polinómico con los datos filtrados
+    if (result.filtered_snr.size() >= 3) {
+        cv::Mat snr_mat(result.filtered_snr.size(), 1, CV_64F, result.filtered_snr.data());
+        cv::Mat signal_mat(result.filtered_signal.size(), 1, CV_64F, result.filtered_signal.data());
+        polyfit(snr_mat, signal_mat, result.poly_coeffs, 2);
+    }
+    
+    return result;
 }
+
 
 bool run_dynamic_range_analysis(const ProgramOptions& opts, std::ostream& log_stream) {
     const int NCOLS = 11;
@@ -136,10 +119,43 @@ bool run_dynamic_range_analysis(const ProgramOptions& opts, std::ostream& log_st
             signal_ev.push_back(log2(patch_data.signal[j]));
         }
         
-        double dr_12db = calculate_dr_for_threshold(12.0, snr_db, signal_ev, opts.use_splines, log_stream);
-        double dr_0db = calculate_dr_for_threshold(0.0, snr_db, signal_ev, opts.use_splines, log_stream);
+        DRCalcResult result12db = calculate_dr_models(12.0, snr_db, signal_ev, log_stream);
+        DRCalcResult result0db  = calculate_dr_models(0.0, snr_db, signal_ev, log_stream);
+
+        double dr_12db = 0.0, dr_0db = 0.0;
+        if (opts.use_splines) {
+            log_stream << "  - Method: Using Spline Interpolation." << std::endl;
+            // --- CORRECCIÓN: Comprobamos si hay datos filtrados, no si el spline está vacío ---
+            if (!result12db.filtered_snr.empty()) dr_12db = -result12db.spline_model(12.0);
+            if (!result0db.filtered_snr.empty())  dr_0db  = -result0db.spline_model(0.0);
+        } else {
+            log_stream << "  - Method: Using Polynomial Fit (Order 2)." << std::endl;
+            if (!result12db.poly_coeffs.empty()) {
+                double c2 = result12db.poly_coeffs.at<double>(0);
+                double c1 = result12db.poly_coeffs.at<double>(1);
+                double c0 = result12db.poly_coeffs.at<double>(2);
+                dr_12db = -(c2 * 12.0 * 12.0 + c1 * 12.0 + c0);
+            }
+            if (!result0db.poly_coeffs.empty()) {
+                double c2 = result0db.poly_coeffs.at<double>(0);
+                double c1 = result0db.poly_coeffs.at<double>(1);
+                double c0 = result0db.poly_coeffs.at<double>(2);
+                dr_0db = -(c2 * 0.0 * 0.0 + c1 * 0.0 + c0);
+            }
+        }
         
         all_results.push_back({name, dr_12db, dr_0db, (int)patch_data.signal.size()});
+
+        fs::path input_path(name);
+        std::string stem = input_path.stem().string();
+        
+        std::string plot12db_filename = stem + "_12dB_plot.png";
+        generate_debug_plot(plot12db_filename, "DR Analysis @ 12dB for " + stem, snr_db, signal_ev, result12db);
+        log_stream << "  - Saved debug plot: " << plot12db_filename << std::endl;
+
+        std::string plot0db_filename = stem + "_0dB_plot.png";
+        generate_debug_plot(plot0db_filename, "DR Analysis @ 0dB for " + stem, snr_db, signal_ev, result0db);
+        log_stream << "  - Saved debug plot: " << plot0db_filename << std::endl;
     }
 
     log_stream << "\n--- Dynamic Range Results ---\n";

@@ -6,6 +6,7 @@
 #include <optional>
 #include <ostream>
 #include "arguments.hpp" // Required to know about the ProgramOptions struct
+#include "spline.h"
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/core.hpp> // Necesario para cv::Mat
@@ -23,6 +24,16 @@ struct PatchAnalysisResult {
     std::vector<double> signal;
     std::vector<double> noise;
     cv::Mat image_with_patches;
+};
+
+
+// --- NUEVO: Estructura para devolver los resultados del cálculo de DR ---
+struct DRCalcResult {
+    double dr_value = 0.0;
+    tk::spline spline_model;
+    cv::Mat poly_coeffs;
+    std::vector<double> filtered_snr;
+    std::vector<double> filtered_signal;
 };
 
 // Declarations of image processing functions
@@ -49,3 +60,12 @@ std::optional<double> process_saturation_frame(const std::string& filename, std:
 bool prepare_and_sort_files(ProgramOptions& opts, std::ostream& log_stream);
 
 void polyfit(const cv::Mat& src_x, const cv::Mat& src_y, cv::Mat& dst, int order);
+
+// Declaración función para generar gráficos
+void generate_debug_plot(
+    const std::string& output_filename,
+    const std::string& plot_title,
+    const std::vector<double>& all_snr_db,
+    const std::vector<double>& all_signal_ev,
+    const DRCalcResult& result
+);
