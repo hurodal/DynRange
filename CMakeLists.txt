@@ -10,7 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # --- DEPENDENCY SEARCH ---
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBRAW REQUIRED libraw)
-find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc)
+find_package(OpenCV 4 REQUIRED COMPONENTS core imgproc imgcodecs)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 find_package(CLI11 REQUIRED)
 find_package(Gettext REQUIRED)

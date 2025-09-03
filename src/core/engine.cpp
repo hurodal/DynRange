@@ -15,7 +15,6 @@
 
 namespace fs = std::filesystem;
 
-// Función de ayuda para calcular los modelos de DR para un umbral específico
 static DRCalcResult calculate_dr_models(double threshold, const std::vector<double>& snr_db, const std::vector<double>& signal_ev, std::ostream& log_stream) {
     const double filter_range = 5.0;
     DRCalcResult result;
@@ -32,6 +31,7 @@ static DRCalcResult calculate_dr_models(double threshold, const std::vector<doub
 
     // 2. Calcular el modelo de Spline con los datos filtrados
     if (result.filtered_snr.size() >= 2) {
+        // Spline necesita que los puntos X estén ordenados
         std::vector<size_t> p(result.filtered_snr.size());
         std::iota(p.begin(), p.end(), 0);
         std::sort(p.begin(), p.end(), [&](size_t i, size_t j){ return result.filtered_snr[i] < result.filtered_snr[j]; });
@@ -41,6 +41,7 @@ static DRCalcResult calculate_dr_models(double threshold, const std::vector<doub
             sorted_snr[idx] = result.filtered_snr[p[idx]]; 
             sorted_sig[idx] = result.filtered_signal[p[idx]];
         }
+        
         result.spline_model.set_points(sorted_snr, sorted_sig);
     }
 
@@ -125,9 +126,8 @@ bool run_dynamic_range_analysis(const ProgramOptions& opts, std::ostream& log_st
         double dr_12db = 0.0, dr_0db = 0.0;
         if (opts.use_splines) {
             log_stream << "  - Method: Using Spline Interpolation." << std::endl;
-            // --- CORRECCIÓN: Comprobamos si hay datos filtrados, no si el spline está vacío ---
-            if (!result12db.filtered_snr.empty()) dr_12db = -result12db.spline_model(12.0);
-            if (!result0db.filtered_snr.empty())  dr_0db  = -result0db.spline_model(0.0);
+            if (result12db.filtered_snr.size() >= 2) dr_12db = -result12db.spline_model(12.0);
+            if (result0db.filtered_snr.size() >= 2)  dr_0db  = -result0db.spline_model(0.0);
         } else {
             log_stream << "  - Method: Using Polynomial Fit (Order 2)." << std::endl;
             if (!result12db.poly_coeffs.empty()) {
@@ -149,13 +149,24 @@ bool run_dynamic_range_analysis(const ProgramOptions& opts, std::ostream& log_st
         fs::path input_path(name);
         std::string stem = input_path.stem().string();
         
-        std::string plot12db_filename = stem + "_12dB_plot.png";
-        generate_debug_plot(plot12db_filename, "DR Analysis @ 12dB for " + stem, snr_db, signal_ev, result12db);
-        log_stream << "  - Saved debug plot: " << plot12db_filename << std::endl;
+        // --- CAMBIO: Generamos tres gráficos por fichero ---
 
-        std::string plot0db_filename = stem + "_0dB_plot.png";
-        generate_debug_plot(plot0db_filename, "DR Analysis @ 0dB for " + stem, snr_db, signal_ev, result0db);
-        log_stream << "  - Saved debug plot: " << plot0db_filename << std::endl;
+        // Gráfico 1: Vista general (auto-escalado)
+        std::string plot_full_filename = stem + "_full_range_plot.png";
+        generate_debug_plot(plot_full_filename, "Full Range Analysis for " + stem, snr_db, signal_ev, result12db);
+        log_stream << "  - Saved full range plot: " << plot_full_filename << std::endl;
+        
+        // Gráfico 2: Zoom en el umbral de 12dB
+        std::string plot12db_filename = stem + "_12dB_zoom_plot.png";
+        generate_debug_plot(plot12db_filename, "Zoom @ 12dB for " + stem, snr_db, signal_ev, result12db, 
+                            std::optional<cv::Point2d>{cv::Point2d(7.0, 17.0)});
+        log_stream << "  - Saved 12dB zoom plot: " << plot12db_filename << std::endl;
+
+        // Gráfico 3: Zoom en el umbral de 0dB
+        std::string plot0db_filename = stem + "_0dB_zoom_plot.png";
+        generate_debug_plot(plot0db_filename, "Zoom @ 0dB for " + stem, snr_db, signal_ev, result0db,
+                            std::optional<cv::Point2d>{cv::Point2d(-5.0, 5.0)});
+        log_stream << "  - Saved 0dB zoom plot: " << plot0db_filename << std::endl;
     }
 
     log_stream << "\n--- Dynamic Range Results ---\n";
